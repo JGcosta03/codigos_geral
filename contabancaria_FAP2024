@@ -1,0 +1,191 @@
+import mysql.connector
+from datetime import datetime
+
+# Função para conectar ao banco de dados MySQL
+def conectar_db():
+    return mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="sua_senha",
+        database="banco_bancario"
+    )
+
+# Classe Conta
+class Conta:
+    def __init__(self, numero, correntista_id):
+        self.numero = numero
+        self.correntista_id = correntista_id
+
+    def depositar(self, valor):
+        if valor <= 0:
+            raise ValueError("O valor do depósito deve ser positivo.")
+        conexao = conectar_db()
+        cursor = conexao.cursor()
+        sql = "UPDATE contas SET saldo = saldo + %s WHERE numero_conta = %s"
+        cursor.execute(sql, (valor, self.numero))
+        sql_mov = "INSERT INTO movimentacoes (tipo, valor, conta_id) VALUES (%s, %s, (SELECT id FROM contas WHERE numero_conta = %s))"
+        cursor.execute(sql_mov, ('depósito', valor, self.numero))
+        conexao.commit()
+        conexao.close()
+
+    def sacar(self, valor):
+        if valor <= 0:
+            raise ValueError("O valor do saque deve ser positivo.")
+        conexao = conectar_db()
+        cursor = conexao.cursor()
+        cursor.execute("SELECT saldo FROM contas WHERE numero_conta = %s", (self.numero,))
+        saldo_atual = cursor.fetchone()[0]
+        if valor > saldo_atual:
+            raise ValueError("Saldo insuficiente.")
+        sql = "UPDATE contas SET saldo = saldo - %s WHERE numero_conta = %s"
+        cursor.execute(sql, (valor, self.numero))
+        sql_mov = "INSERT INTO movimentacoes (tipo, valor, conta_id) VALUES (%s, %s, (SELECT id FROM contas WHERE numero_conta = %s))"
+        cursor.execute(sql_mov, ('saque', valor, self.numero))
+        conexao.commit()
+        conexao.close()
+
+    def extrato(self):
+        conexao = conectar_db()
+        cursor = conexao.cursor()
+        sql = """
+        SELECT 
+            c.nome, c.numero_conta, co.saldo, m.tipo, m.valor, m.data_movimentacao 
+        FROM 
+            contas co
+        JOIN 
+            correntistas c ON c.id = co.correntista_id
+        LEFT JOIN 
+            movimentacoes m ON m.conta_id = co.id
+        WHERE 
+            co.numero_conta = %s
+        ORDER BY 
+            m.data_movimentacao DESC
+        """
+        cursor.execute(sql, (self.numero,))
+        extrato = cursor.fetchall()
+        conexao.close()
+
+        return extrato
+
+# Classe Gerente
+class Gerente:
+    def cadastrar_conta(self, numero, nome, cpf, endereco, tipo="corrente"):
+        conexao = conectar_db()
+        cursor = conexao.cursor()
+
+        # Cadastrar correntista
+        sql_correntista = "INSERT INTO correntistas (nome, cpf, endereco) VALUES (%s, %s, %s)"
+        cursor.execute(sql_correntista, (nome, cpf, endereco))
+        correntista_id = cursor.lastrowid  # Obtém o ID do correntista recém-cadastrado
+
+        # Cadastrar conta
+        sql_conta = "INSERT INTO contas (numero_conta, saldo, correntista_id) VALUES (%s, %s, %s)"
+        cursor.execute(sql_conta, (numero, 0.0, correntista_id))
+
+        conexao.commit()
+        conexao.close()
+
+    def editar_conta(self, numero, nome=None, endereco=None):
+        conexao = conectar_db()
+        cursor = conexao.cursor()
+
+        if nome:
+            sql_nome = "UPDATE correntistas SET nome = %s WHERE id = (SELECT correntista_id FROM contas WHERE numero_conta = %s)"
+            cursor.execute(sql_nome, (nome, numero))
+        if endereco:
+            sql_endereco = "UPDATE correntistas SET endereco = %s WHERE id = (SELECT correntista_id FROM contas WHERE numero_conta = %s)"
+            cursor.execute(sql_endereco, (endereco, numero))
+
+        conexao.commit()
+        conexao.close()
+
+    def excluir_conta(self, numero):
+        conexao = conectar_db()
+        cursor = conexao.cursor()
+        # Exclui as movimentações associadas à conta
+        sql_mov = "DELETE FROM movimentacoes WHERE conta_id = (SELECT id FROM contas WHERE numero_conta = %s)"
+        cursor.execute(sql_mov, (numero,))
+        # Exclui a conta
+        sql_conta = "DELETE FROM contas WHERE numero_conta = %s"
+        cursor.execute(sql_conta, (numero,))
+        # Exclui o correntista (se necessário)
+        sql_correntista = "DELETE FROM correntistas WHERE id = (SELECT correntista_id FROM contas WHERE numero_conta = %s)"
+        cursor.execute(sql_correntista, (numero,))
+        conexao.commit()
+        conexao.close()
+
+    def realizar_deposito(self, numero, valor):
+        conta = Conta(numero, None)
+        conta.depositar(valor)
+
+    def realizar_saque(self, numero, valor):
+        conta = Conta(numero, None)
+        conta.sacar(valor)
+
+    def visualizar_extrato(self, numero):
+        conta = Conta(numero, None)
+        return conta.extrato()
+
+# Função principal
+def main():
+    gerente = Gerente()
+
+    while True:
+        print("\n1. Cadastrar Conta")
+        print("2. Editar Conta")
+        print("3. Excluir Conta")
+        print("4. Depositar")
+        print("5. Sacar")
+        print("6. Visualizar Extrato")
+        print("7. Sair")
+        opcao = input("Escolha uma opção: ")
+
+        if opcao == "1":
+            nome = input("Nome do correntista: ")
+            cpf = input("CPF do correntista: ")
+            endereco = input("Endereço do correntista: ")
+            numero = input("Número da conta: ")
+            tipo = input("Tipo da conta (poupança/corrente): ")
+            gerente.cadastrar_conta(numero, nome, cpf, endereco, tipo)
+            print("Conta cadastrada com sucesso!")
+
+        elif opcao == "2":
+            numero = input("Número da conta a ser editada: ")
+            nome = input("Novo nome (deixe em branco para não alterar): ")
+            endereco = input("Novo endereço (deixe em branco para não alterar): ")
+            gerente.editar_conta(numero, nome if nome else None, endereco if endereco else None)
+            print("Conta editada com sucesso!")
+
+        elif opcao == "3":
+            numero = input("Número da conta a ser excluída: ")
+            gerente.excluir_conta(numero)
+            print("Conta excluída com sucesso!")
+
+        elif opcao == "4":
+            numero = input("Número da conta para depósito: ")
+            valor = float(input("Valor do depósito: "))
+            gerente.realizar_deposito(numero, valor)
+            print("Depósito realizado com sucesso!")
+
+        elif opcao == "5":
+            numero = input("Número da conta para saque: ")
+            valor = float(input("Valor do saque: "))
+            gerente.realizar_saque(numero, valor)
+            print("Saque realizado com sucesso!")
+
+        elif opcao == "6":
+            numero = input("Número da conta para extrato: ")
+            extrato = gerente.visualizar_extrato(numero)
+            print("\nExtrato Bancário")
+            for linha in extrato:
+                print(f"Nome: {linha[0]}, Número da Conta: {linha[1]}, Saldo: {linha[2]:.2f}, Tipo: {linha[3]}, Valor: {linha[4]:.2f}, Data: {linha[5]}")
+                
+        elif opcao == "7":
+            print("Saindo do sistema...")
+            break
+
+        else:
+            print("Opção inválida. Tente novamente.")
+
+if __name__ == "__main__":
+    main()
